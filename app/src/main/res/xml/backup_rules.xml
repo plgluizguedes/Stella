@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Regras do Auto Backup do Android (aparelhos com Android 11 ou anterior).
+
+  Os dados do prontuário são sensíveis e já têm um backup próprio e opcional (Google Drive do tutor).
+  Por isso NADA é copiado automaticamente para a nuvem do Android: banco, anexos, fotos e preferências
+  (inclusive a conta vinculada ao Drive) ficam de fora.
+-->
+<full-backup-content>
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+</full-backup-content>

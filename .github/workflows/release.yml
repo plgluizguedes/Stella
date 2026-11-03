@@ -1,0 +1,144 @@
+name: Release APK
+
+# Publica o APK do Stella numa GitHub Release (pré-release de teste).
+#
+# Como usar (depois que este arquivo estiver na main):
+#   • Pelo site: aba Actions → "Release APK" → Run workflow → informe o nome (ex.: v1.0.0-teste.1)
+#   • Ou criando uma tag que comece com "v" em um commit que já esteja na main.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Nome da versão (ex.: v1.0.0-teste.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write # necessário para criar a Release e anexar o APK
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    name: Build e publicar APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Validar o nome da versão
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Nome de versão inválido: '$TAG'. Use algo como v1.0.0 ou v1.0.0-teste.1"
+            exit 1
+          fi
+
+      - name: Baixar o código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Só publica código que já está na main (que já passou pelo PR e pelo CI).
+      - name: Conferir que o commit está na main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::O commit $GITHUB_SHA não está na main. Faça o merge do PR antes de publicar."
+            exit 1
+          fi
+
+      - name: Conferir que a versão ainda não existe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Já existe uma release chamada $TAG. Escolha outro nome."
+            exit 1
+          fi
+
+      # Robolectric (Android SDK 36) exige Java 21, igual ao android-ci.yml.
+      - name: Instalar o Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Preparar o Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Permitir executar o gradlew
+        run: chmod +x ./gradlew
+
+      - name: Rodar os testes de unidade
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      # A Release só sai assinada com a chave de teste fixa do Stella. Sem o secret, ou com
+      # uma chave de SHA-1 diferente, o workflow para antes de publicar um APK que não loga no Google.
+      - name: Restaurar a chave de assinatura de teste
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+          # Defina em Settings > Secrets and variables > Actions > Variables (EXPECTED_SIGNER_SHA1).
+          # Se não existir, a conferência de SHA-1 é pulada com um aviso.
+          EXPECTED_SHA1: ${{ vars.EXPECTED_SIGNER_SHA1 }}
+        run: |
+          if [ -z "$DEBUG_KEYSTORE_BASE64" ]; then
+            echo "::error::O secret DEBUG_KEYSTORE_BASE64 não está configurado. Crie-o em Settings > Secrets and variables > Actions e rode de novo."
+            exit 1
+          fi
+          printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > debug.keystore
+          sha1="$(keytool -list -v -keystore debug.keystore -storepass android | sed -n 's/^[[:space:]]*SHA1: //p' | head -n1)"
+          echo "SHA-1 do certificado: $sha1"
+          if [ -z "$EXPECTED_SHA1" ]; then
+            echo "::warning::Variável EXPECTED_SIGNER_SHA1 não definida; SHA-1 do certificado não conferido."
+          elif [ "$sha1" != "$EXPECTED_SHA1" ]; then
+            echo "::error::SHA-1 do secret ($sha1) é diferente do esperado ($EXPECTED_SHA1). Confira o conteúdo do secret DEBUG_KEYSTORE_BASE64."
+            exit 1
+          fi
+          echo "SIGNER_SHA1=$sha1" >> "$GITHUB_ENV"
+
+      - name: Gerar o APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Preparar os arquivos da release
+        run: |
+          src="$(ls app/build/outputs/apk/debug/*.apk | head -n1)"
+          mkdir -p dist
+          cp "$src" "dist/stella-${TAG}-debug.apk"
+          (cd dist && sha256sum "stella-${TAG}-debug.apk" > "stella-${TAG}-debug.apk.sha256")
+          ls -l dist
+
+      - name: Criar a Release no GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="stella-${TAG}-debug.apk"
+          sha="$(cut -d' ' -f1 "dist/${apk}.sha256")"
+          cat > notes.md <<NOTES
+          Build de TESTE do app Stella (versão do app: 1.0). Não é a versão da Play Store.
+
+          ATENÇÃO antes de instalar
+          - Este APK é assinado com a chave de TESTE fixa do Stella (SHA-1 na seção Origem). Ela não serve para a versão pública.
+          - Se o Stella já estiver instalado e tiver sido assinado com outra chave (por exemplo, um build anterior do GitHub), o Android vai pedir para DESINSTALAR o antigo, e isso APAGA os dados locais do app. Só instale em um aparelho sem dados importantes. Depois dessa primeira vez, as próximas versões assinadas com esta mesma chave atualizam por cima.
+          - O login do Google Drive só funciona se o pacote com.aistudio.stella.ptrack e o SHA-1 abaixo estiverem cadastrados no cliente OAuth Android do projeto Google Cloud, e se a sua conta estiver como usuário de teste.
+
+          Como instalar
+          1. No navegador do celular Android, abra esta página e baixe o arquivo ${apk}.
+          2. Abra o arquivo baixado e permita "instalar apps desconhecidos" quando o Android pedir.
+
+          Origem
+          - Commit: ${GITHUB_SHA}
+          - SHA-1 do certificado de assinatura: ${SIGNER_SHA1}
+          - Gerado pelo GitHub Actions; os testes de unidade passaram antes de gerar o APK.
+          - SHA-256 do APK: ${sha}
+          NOTES
+          gh release create "$TAG" "dist/${apk}" "dist/${apk}.sha256" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Stella ${TAG} (build de teste)" \
+            --notes-file notes.md

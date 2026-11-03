@@ -1,0 +1,144 @@
+name: Android CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests (JVM / Robolectric)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Robolectric com Android SDK 36 exige Java 21 (com Java 17 as classes
+      # Robolectric falham em classMethod com UnsupportedOperationException).
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          ./gradlew :app:testDebugUnitTest --stacktrace 2>&1 | tee gradle-output.log
+
+      # Quando algo falha, resume os erros em UMA anotação do GitHub (aparece na aba do job e
+      # pode ser lida pela API), já que o log completo nem sempre é acessível a quem audita.
+      - name: Report failures as annotations
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import glob
+          import re
+          import xml.etree.ElementTree as ET
+          out = []
+          for p in sorted(glob.glob("app/build/test-results/testDebugUnitTest/*.xml")):
+              for tc in ET.parse(p).getroot().iter("testcase"):
+                  for kind in ("failure", "error"):
+                      node = tc.find(kind)
+                      if node is None:
+                          continue
+                      msg = (node.get("message") or node.text or "").strip().splitlines()
+                      first = msg[0][:300] if msg else ""
+                      cls = (tc.get("classname") or "?").split(".")[-1]
+                      frames = []
+                      for sl in (node.text or "").splitlines():
+                          m = re.search(r"\((\w+\.kt:\d+)\)", sl)
+                          if m and "com.example" in sl and m.group(1) not in frames:
+                              frames.append(m.group(1))
+                          if len(frames) == 2:
+                              break
+                      where = (" @ " + " <- ".join(frames)) if frames else ""
+                      out.append(f"TESTE {cls}.{tc.get('name')} -> {first}{where}")
+          try:
+              log = open("gradle-output.log", encoding="utf-8", errors="replace").read().splitlines()
+          except OSError:
+              log = []
+          for i, line in enumerate(log):
+              if line.startswith("e: "):
+                  out.append("COMPILACAO " + line[3:303])
+              elif line.startswith("* What went wrong:"):
+                  out.append("GRADLE " + " | ".join(l.strip()[:300] for l in log[i + 1:i + 4] if l.strip()))
+          text = "\n".join(out[:80]) or "Nenhum erro reconhecido (veja o log completo)."
+          text = text[:20000].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Diagnostico do CI ({len(out)} itens)::{text}")
+          PY
+
+      - name: Summarize test count
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          t = f = e = s = 0
+          for p in glob.glob("app/build/test-results/testDebugUnitTest/*.xml"):
+              r = ET.parse(p).getroot()
+              t += int(r.get("tests", 0)); f += int(r.get("failures", 0))
+              e += int(r.get("errors", 0)); s += int(r.get("skipped", 0))
+          line = f"Tests: {t} | Failures: {f} | Errors: {e} | Skipped: {s}"
+          print(line)
+          import os
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("### Resultado dos testes\n" + line + "\n")
+          PY
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest
+            app/build/test-results/testDebugUnitTest
+          if-no-files-found: warn
+
+  build-debug:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x ./gradlew
+      # Usa a chave de teste fixa (se o secret existir) para o SHA-1 do APK ser sempre o mesmo.
+      # O app/build.gradle.kts passa a assinar com ela quando existe debug.keystore na raiz.
+      - name: Restaurar a chave de assinatura de teste
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$DEBUG_KEYSTORE_BASE64" ]; then
+            echo "::warning::Secret DEBUG_KEYSTORE_BASE64 não configurado. O APK será assinado com uma chave aleatória (o login do Google não vai funcionar)."
+            exit 0
+          fi
+          printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > debug.keystore
+          echo "SHA-1 do certificado que assina o APK:"
+          keytool -list -v -keystore debug.keystore -storepass android | grep 'SHA1:'
+      - run: ./gradlew :app:assembleDebug --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
