@@ -32,7 +32,7 @@ jobs:
           java-version: 21
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
@@ -122,7 +122,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - run: chmod +x ./gradlew
       # Usa a chave de teste fixa (se o secret existir) para o SHA-1 do APK ser sempre o mesmo.
       # O app/build.gradle.kts passa a assinar com ela quando existe debug.keystore na raiz.
