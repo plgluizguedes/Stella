@@ -71,7 +71,7 @@ class DriveSyncProtectionTest {
         } catch (_: Exception) {}
     }
 
-    private fun createEmptySnapshot(profileName: String = "Stella"): BackupSnapshot =
+    private fun createEmptySnapshot(profileName: String = StellaProfile().name): BackupSnapshot =
         BackupSnapshot(
             profile = StellaProfile(id = 1, name = profileName, photoUri = null),
             glucoseList = emptyList(),
@@ -377,7 +377,7 @@ class DriveSyncProtectionTest {
 
     @Test
     fun testLocalEmptyDetection_defaultProfileWithoutRecords_isEmpty() {
-        val emptySnapshot = createEmptySnapshot("Stella")
+        val emptySnapshot = createEmptySnapshot()
         assertTrue("Snapshot padrão sem dados clínicos deve ser considerado vazio", StellaViewModel.isLocalDatabaseEmpty(emptySnapshot))
         assertEquals(0, StellaViewModel.countLocalRecords(emptySnapshot))
     }
