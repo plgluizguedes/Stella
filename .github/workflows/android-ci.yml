@@ -103,7 +103,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: |
@@ -138,7 +138,7 @@ jobs:
           echo "SHA-1 do certificado que assina o APK:"
           keytool -list -v -keystore debug.keystore -storepass android | grep 'SHA1:'
       - run: ./gradlew :app:assembleDebug --stacktrace
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: app-debug-apk
           path: app/build/outputs/apk/debug/*.apk
