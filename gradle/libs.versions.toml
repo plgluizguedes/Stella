@@ -21,7 +21,7 @@ coilCompose = "2.7.0"
 kotlinxCoroutinesAndroid = "1.10.2"
 kotlinxCoroutinesCore = "1.10.2"
 okhttp = "5.5.1"
-robolectric = "4.16.1"
+robolectric = "4.18"
 playServicesAuth = "21.3.0"
 
 
